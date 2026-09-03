@@ -64,6 +64,14 @@ function ConvertTo-LightLaunchValue([string]$Value) {
 }
 ```
 
+Dock 默认外观字段：
+
+```ini
+DockBackgroundColor=16054004
+DockTransparency=53
+DockBorderColor=14343640
+```
+
 新分组的默认字段：
 
 ```ini

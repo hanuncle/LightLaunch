@@ -51,9 +51,11 @@ struct Category {
 };
 
 struct RailAppearance {
-    std::uint32_t backgroundColor = 0x00E7EAE6U;
-    std::uint8_t transparencyPercent = 9;
-    std::uint32_t borderColor = 0x00F9FBFAU;
+    // User-approved default Dock palette: RGB(244, 246, 244), 53%
+    // transparency, and RGB(216, 221, 218) border.
+    std::uint32_t backgroundColor = 0x00F4F6F4U;
+    std::uint8_t transparencyPercent = 53;
+    std::uint32_t borderColor = 0x00DADDD8U;
 
     bool operator==(const RailAppearance&) const = default;
 };

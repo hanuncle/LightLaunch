@@ -115,6 +115,16 @@ int wmain() {
     expected.categories[1].background.borderColor = 0x00D8C5A4U;
 
     bool success = true;
+    const lightlaunch::RailAppearance defaultRail;
+    success &= Check(defaultRail.backgroundColor == 0x00F4F6F4U &&
+                         defaultRail.transparencyPercent == 53 &&
+                         defaultRail.borderColor == 0x00DADDD8U,
+                     L"default Dock appearance should match the approved palette");
+    const lightlaunch::FenceBackground defaultFence;
+    success &= Check(defaultFence.backgroundColor == 0x00E7EAE6U &&
+                         defaultFence.transparencyPercent == 31 &&
+                         defaultFence.borderColor == 0x00FFFFFFU,
+                     L"new fences should match the approved group 3 appearance");
     std::vector<int> reordered{0, 1, 2, 3};
     success &= Check(lightlaunch::MoveVectorElement(reordered, 0, 2),
                      L"forward drag reorder should succeed");
