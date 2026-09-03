@@ -1,0 +1,15 @@
+build*/
+dist/
+.vs/
+out/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+*.pdb
+*.ilk
+*.obj
+*.tlog
+*.lastbuildstate
+*.recipe
+*.log

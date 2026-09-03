@@ -1,0 +1,56 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace lightlaunch {
+
+inline constexpr std::size_t kMaximumCategories = 256;
+inline constexpr std::size_t kMaximumItemsPerCategory = 4096;
+
+struct LaunchItem {
+    std::wstring name;
+    std::wstring target;
+    std::wstring arguments;
+    std::wstring workingDirectory;
+
+    bool operator==(const LaunchItem&) const = default;
+};
+
+enum class FenceBackgroundMode : std::uint8_t {
+    Cover = 0,
+    Contain = 1,
+    Stretch = 2,
+};
+
+struct FenceBackground {
+    std::wstring imagePath;
+    FenceBackgroundMode mode = FenceBackgroundMode::Cover;
+    std::uint8_t opacityPercent = 45;
+    std::uint16_t cropX = 5000;
+    std::uint16_t cropY = 5000;
+    // Win32 COLORREF layout (0x00BBGGRR). This is the midpoint of the
+    // category Dock's light glass gradient: RGB(230, 234, 231).
+    std::uint32_t backgroundColor = 0x00E7EAE6U;
+
+    bool operator==(const FenceBackground&) const = default;
+};
+
+struct Category {
+    std::wstring name;
+    std::vector<LaunchItem> items;
+    FenceBackground background;
+
+    bool operator==(const Category&) const = default;
+};
+
+struct AppState {
+    std::vector<Category> categories;
+    std::size_t selectedCategory = 0;
+
+    bool operator==(const AppState&) const = default;
+};
+
+}  // namespace lightlaunch
