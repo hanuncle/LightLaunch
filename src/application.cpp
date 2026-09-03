@@ -3,6 +3,7 @@
 #include "background_dialog.h"
 #include "background_image.h"
 #include "input_dialog.h"
+#include "reorder.h"
 
 #include <windows.h>
 #include <commctrl.h>
@@ -18,6 +19,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cwchar>
 #include <memory>
 #include <mutex>
@@ -94,6 +96,10 @@ struct FenceWindow {
     UINT dpi = 96;
     bool pinned = false;
     bool movingOrSizing = false;
+    int itemDragSource = -1;
+    int itemDropTarget = -1;
+    POINT itemDragOrigin{};
+    bool itemDragging = false;
     ULONGLONG pointerOutsideSince = 0;
     ULONGLONG keepVisibleUntil = 0;
     std::shared_ptr<IconLoadBatch> iconLoadBatch;
@@ -192,6 +198,11 @@ constexpr int kRailPanelBottomRed = 216;
 constexpr int kRailPanelBottomGreen = 221;
 constexpr int kRailPanelBottomBlue = 218;
 constexpr COLORREF kRailPanelBorderColor = RGB(250, 251, 249);
+
+bool HasExceededDragThreshold(POINT origin, POINT current) {
+    return std::abs(current.x - origin.x) >= GetSystemMetrics(SM_CXDRAG) ||
+           std::abs(current.y - origin.y) >= GetSystemMetrics(SM_CYDRAG);
+}
 
 COLORREF FenceSurfaceColor(const FenceBackground& settings) {
     return static_cast<COLORREF>(settings.backgroundColor & 0x00FFFFFFU);
@@ -656,21 +667,85 @@ LRESULT CALLBACK Application::CategoryListSubclassProc(HWND window, UINT message
          message == WM_MOUSEWHEEL || message == WM_KEYDOWN)) {
         return 0;
     }
-    if (app != nullptr &&
-        (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK)) {
+    if (app != nullptr && message == WM_LBUTTONDOWN) {
         const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         const std::optional<std::size_t> categoryIndex =
             app->CategoryIndexFromListPoint(point);
         if (categoryIndex.has_value()) {
             SetFocus(window);
-            app->ActivateCategory(*categoryIndex);
+            app->categoryDragSource_ = categoryIndex;
+            app->categoryDropTarget_ = categoryIndex;
+            app->categoryDragOrigin_ = point;
+            app->categoryDragging_ = false;
+            SetCapture(window);
         } else {
+            app->categoryDragSource_.reset();
+            app->categoryDropTarget_.reset();
+            app->categoryDragging_ = false;
             SendMessageW(window, LB_SETCURSEL, static_cast<WPARAM>(-1), 0);
             InvalidateRect(window, nullptr, FALSE);
         }
         return 0;
     }
+
+    if (app != nullptr && message == WM_LBUTTONDBLCLK) {
+        const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        const std::optional<std::size_t> categoryIndex =
+            app->CategoryIndexFromListPoint(point);
+        if (categoryIndex.has_value()) {
+            app->ActivateCategory(*categoryIndex);
+        }
+        return 0;
+    }
+
+    if (app != nullptr && message == WM_MOUSEMOVE &&
+        app->categoryDragSource_.has_value() && (wParam & MK_LBUTTON) != 0) {
+        const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (!app->categoryDragging_ &&
+            HasExceededDragThreshold(app->categoryDragOrigin_, point)) {
+            app->categoryDragging_ = true;
+        }
+        if (app->categoryDragging_) {
+            const std::optional<std::size_t> target =
+                app->CategoryIndexFromListPoint(point);
+            if (target != app->categoryDropTarget_) {
+                app->categoryDropTarget_ = target;
+                InvalidateRect(window, nullptr, FALSE);
+            }
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+        }
+        return 0;
+    }
+
     if (app != nullptr && message == WM_LBUTTONUP) {
+        const std::optional<std::size_t> source = app->categoryDragSource_;
+        const std::optional<std::size_t> destination = app->categoryDropTarget_;
+        const bool wasDragging = app->categoryDragging_;
+        if (GetCapture() == window) {
+            ReleaseCapture();
+        }
+        app->categoryDragSource_.reset();
+        app->categoryDropTarget_.reset();
+        app->categoryDragging_ = false;
+        InvalidateRect(window, nullptr, FALSE);
+
+        if (source.has_value()) {
+            if (wasDragging && destination.has_value() &&
+                *source != *destination) {
+                app->ReorderCategory(*source, *destination);
+            } else if (!wasDragging) {
+                app->ActivateCategory(*source);
+            }
+        }
+        return 0;
+    }
+
+    if (app != nullptr &&
+        (message == WM_CANCELMODE || message == WM_CAPTURECHANGED)) {
+        app->categoryDragSource_.reset();
+        app->categoryDropTarget_.reset();
+        app->categoryDragging_ = false;
+        InvalidateRect(window, nullptr, FALSE);
         return 0;
     }
     if (app != nullptr && message == WM_CONTEXTMENU) {
@@ -811,6 +886,18 @@ LRESULT CALLBACK Application::ItemListSubclassProc(HWND window, UINT message, WP
                                                    DWORD_PTR referenceData) {
     auto* fence = reinterpret_cast<FenceWindow*>(referenceData);
     Application* app = fence != nullptr ? fence->owner : nullptr;
+    const auto clearDragState = [window, fence]() {
+        if (fence == nullptr) {
+            return;
+        }
+        if (fence->itemDropTarget >= 0) {
+            ListView_SetItemState(window, fence->itemDropTarget, 0,
+                                  LVIS_DROPHILITED);
+        }
+        fence->itemDragSource = -1;
+        fence->itemDropTarget = -1;
+        fence->itemDragging = false;
+    };
     if (app != nullptr && (app->interactionDepth_ > 0 || app->IsInteractionBlocked()) &&
         (message == WM_LBUTTONDOWN || message == WM_LBUTTONUP ||
          message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDOWN ||
@@ -821,6 +908,76 @@ LRESULT CALLBACK Application::ItemListSubclassProc(HWND window, UINT message, WP
             DragFinish(reinterpret_cast<HDROP>(wParam));
         }
         return 0;
+    }
+    if (app != nullptr && fence != nullptr && message == WM_LBUTTONDOWN) {
+        LVHITTESTINFO hit{};
+        hit.pt = POINT{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        const int itemIndex = ListView_HitTest(window, &hit);
+        const LRESULT result = DefSubclassProc(window, message, wParam, lParam);
+        clearDragState();
+        if (itemIndex >= 0) {
+            fence->itemDragSource = itemIndex;
+            fence->itemDropTarget = itemIndex;
+            fence->itemDragOrigin = hit.pt;
+            SetCapture(window);
+        }
+        return result;
+    }
+    if (app != nullptr && fence != nullptr && message == WM_MOUSEMOVE &&
+        fence->itemDragSource >= 0 && (wParam & MK_LBUTTON) != 0) {
+        const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (!fence->itemDragging &&
+            HasExceededDragThreshold(fence->itemDragOrigin, point)) {
+            fence->itemDragging = true;
+        }
+        if (!fence->itemDragging) {
+            return DefSubclassProc(window, message, wParam, lParam);
+        }
+
+        LVHITTESTINFO hit{};
+        hit.pt = point;
+        int target = ListView_HitTest(window, &hit);
+        RECT client{};
+        GetClientRect(window, &client);
+        if (target < 0 && PtInRect(&client, point) != FALSE &&
+            fence->categoryIndex < app->state_.categories.size() &&
+            !app->state_.categories[fence->categoryIndex].items.empty()) {
+            target = static_cast<int>(
+                app->state_.categories[fence->categoryIndex].items.size() - 1);
+        }
+        if (target != fence->itemDropTarget) {
+            if (fence->itemDropTarget >= 0) {
+                ListView_SetItemState(window, fence->itemDropTarget, 0,
+                                      LVIS_DROPHILITED);
+            }
+            fence->itemDropTarget = target;
+            if (target >= 0) {
+                ListView_SetItemState(window, target, LVIS_DROPHILITED,
+                                      LVIS_DROPHILITED);
+            }
+        }
+        SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+        return 0;
+    }
+    if (app != nullptr && fence != nullptr && message == WM_LBUTTONUP) {
+        const int source = fence->itemDragSource;
+        const int destination = fence->itemDropTarget;
+        const bool wasDragging = fence->itemDragging;
+        const LRESULT result = DefSubclassProc(window, message, wParam, lParam);
+        if (GetCapture() == window) {
+            ReleaseCapture();
+        }
+        clearDragState();
+        if (wasDragging && source >= 0 && destination >= 0 &&
+            source != destination) {
+            app->ReorderItem(*fence, static_cast<std::size_t>(source),
+                             static_cast<std::size_t>(destination));
+        }
+        return result;
+    }
+    if (fence != nullptr &&
+        (message == WM_CANCELMODE || message == WM_CAPTURECHANGED)) {
+        clearDragState();
     }
     if (app != nullptr && message == WM_DROPFILES) {
         FenceWindow* previousFence = app->activeFence_;
@@ -3565,6 +3722,31 @@ void Application::DrawCategoryItem(const DRAWITEMSTRUCT& drawItem) const {
             }
         }
 
+        if (categoryDragging_ && categoryDropTarget_.has_value() &&
+            *categoryDropTarget_ == categoryIndex) {
+            RECT dropRect = cellRect;
+            InflateRect(&dropRect, -ScaleForDpi(2, dpi_),
+                        -ScaleForDpi(2, dpi_));
+            HPEN dropPen = CreatePen(PS_SOLID,
+                                     std::max(2, ScaleForDpi(2, dpi_)),
+                                     RGB(74, 104, 88));
+            HGDIOBJ dropOldPen = dropPen != nullptr
+                                     ? SelectObject(drawItem.hDC, dropPen)
+                                     : nullptr;
+            HGDIOBJ dropOldBrush =
+                SelectObject(drawItem.hDC, GetStockObject(HOLLOW_BRUSH));
+            RoundRect(drawItem.hDC, dropRect.left, dropRect.top,
+                      dropRect.right, dropRect.bottom,
+                      ScaleForDpi(10, dpi_), ScaleForDpi(10, dpi_));
+            SelectObject(drawItem.hDC, dropOldBrush);
+            if (dropOldPen != nullptr) {
+                SelectObject(drawItem.hDC, dropOldPen);
+            }
+            if (dropPen != nullptr) {
+                DeleteObject(dropPen);
+            }
+        }
+
         if ((drawItem.itemState & ODS_FOCUS) != 0 && selected) {
             RECT focusRect = cellRect;
             InflateRect(&focusRect, -ScaleForDpi(2, dpi_), -ScaleForDpi(1, dpi_));
@@ -3703,6 +3885,33 @@ void Application::DeleteCategory(std::size_t categoryIndex) {
         return;
     }
     RemoveFenceForCategory(categoryIndex);
+    RefreshCategories();
+}
+
+void Application::ReorderCategory(std::size_t sourceIndex,
+                                  std::size_t destinationIndex) {
+    if (sourceIndex >= state_.categories.size() ||
+        destinationIndex >= state_.categories.size() ||
+        sourceIndex == destinationIndex) {
+        return;
+    }
+
+    const AppState previousState = state_;
+    MoveVectorElement(state_.categories, sourceIndex, destinationIndex);
+    state_.selectedCategory = RemapIndexAfterMove(
+        state_.selectedCategory, sourceIndex, destinationIndex);
+
+    if (!SaveState()) {
+        state_ = previousState;
+        return;
+    }
+
+    for (const std::unique_ptr<FenceWindow>& fence : fences_) {
+        if (fence != nullptr) {
+            fence->categoryIndex = RemapIndexAfterMove(
+                fence->categoryIndex, sourceIndex, destinationIndex);
+        }
+    }
     RefreshCategories();
 }
 
@@ -3931,6 +4140,36 @@ void Application::MoveSelectedItem(std::size_t destinationCategory) {
         return;
     }
     RefreshCategories();
+}
+
+void Application::ReorderItem(FenceWindow& fence, std::size_t sourceIndex,
+                              std::size_t destinationIndex) {
+    if (fence.categoryIndex >= state_.categories.size()) {
+        return;
+    }
+    Category& category = state_.categories[fence.categoryIndex];
+    if (sourceIndex >= category.items.size() ||
+        destinationIndex >= category.items.size() ||
+        sourceIndex == destinationIndex) {
+        return;
+    }
+
+    const std::vector<LaunchItem> previousItems = category.items;
+    MoveVectorElement(category.items, sourceIndex, destinationIndex);
+    if (!SaveState()) {
+        category.items = previousItems;
+        return;
+    }
+
+    RefreshFence(fence);
+    ListView_SetItemState(fence.itemList, static_cast<int>(destinationIndex),
+                          LVIS_SELECTED | LVIS_FOCUSED,
+                          LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(fence.itemList, static_cast<int>(destinationIndex), FALSE);
+    StartCategoryPreviewLoad();
+    if (categoryList_ != nullptr) {
+        InvalidateRect(categoryList_, nullptr, FALSE);
+    }
 }
 
 void Application::LaunchSelectedItem() {

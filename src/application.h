@@ -121,6 +121,7 @@ private:
     void AddCategory();
     void RenameCategory(std::size_t categoryIndex);
     void DeleteCategory(std::size_t categoryIndex);
+    void ReorderCategory(std::size_t sourceIndex, std::size_t destinationIndex);
     void AddApplication();
     void AddFolder();
     void AddTarget(const std::wstring& target);
@@ -129,6 +130,8 @@ private:
     void RenameSelectedItem();
     void RemoveSelectedItem();
     void MoveSelectedItem(std::size_t destinationCategory);
+    void ReorderItem(FenceWindow& fence, std::size_t sourceIndex,
+                     std::size_t destinationIndex);
     void LaunchSelectedItem();
     void LaunchItemAt(int itemIndex);
     void OpenSelectedItemLocation();
@@ -172,6 +175,10 @@ private:
     std::vector<std::array<HICON, 4>> categoryPreviewIcons_;
     std::vector<std::array<bool, 4>> categoryPreviewRequested_;
     std::optional<std::size_t> hoveredCategory_;
+    std::optional<std::size_t> categoryDragSource_;
+    std::optional<std::size_t> categoryDropTarget_;
+    POINT categoryDragOrigin_{};
+    bool categoryDragging_ = false;
     std::vector<std::unique_ptr<FenceWindow>> fences_;
     FenceWindow* activeFence_ = nullptr;
 

@@ -1,4 +1,5 @@
 #include "config_store.h"
+#include "reorder.h"
 
 #include <windows.h>
 
@@ -108,6 +109,21 @@ int wmain() {
     expected.categories[1].background.backgroundColor = 0x007E5C2AU;
 
     bool success = true;
+    std::vector<int> reordered{0, 1, 2, 3};
+    success &= Check(lightlaunch::MoveVectorElement(reordered, 0, 2),
+                     L"forward drag reorder should succeed");
+    success &= Check(reordered == std::vector<int>({1, 2, 0, 3}),
+                     L"forward drag reorder should place the source at the destination");
+    success &= Check(lightlaunch::MoveVectorElement(reordered, 3, 1),
+                     L"backward drag reorder should succeed");
+    success &= Check(reordered == std::vector<int>({1, 3, 2, 0}),
+                     L"backward drag reorder should place the source at the destination");
+    success &= Check(!lightlaunch::MoveVectorElement(reordered, 1, 1),
+                     L"dropping at the current position should be a no-op");
+    success &= Check(lightlaunch::RemapIndexAfterMove(0, 0, 2) == 2 &&
+                         lightlaunch::RemapIndexAfterMove(1, 0, 2) == 0 &&
+                         lightlaunch::RemapIndexAfterMove(2, 0, 2) == 1,
+                     L"open fence indices should follow a forward category reorder");
     success &= Check(store.Save(expected), L"save should succeed");
 
     lightlaunch::AppState loaded;
