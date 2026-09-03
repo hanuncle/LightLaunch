@@ -48,6 +48,7 @@
 
 - 文件编码：带 BOM 的 UTF-16 LE。
 - 当前格式：`SchemaVersion=2`。
+- Dock 外观保存在 `[General]` 的 `DockBackgroundColor`、`DockTransparency` 和 `DockBorderColor` 字段中。
 - 分组数量上限：256；每个分组的项目数量上限：4096。
 - 分组节连续编号：`[Category.0]`、`[Category.1]`……
 - 项目节连续编号：`[Category.0.Item.0]`、`[Category.0.Item.1]`……

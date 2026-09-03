@@ -33,6 +33,7 @@ add_executable(LightLaunch WIN32
     src/background_dialog.cpp
     src/background_image.cpp
     src/input_dialog.cpp
+    src/rail_appearance_dialog.cpp
     resources/LightLaunch.rc
 )
 

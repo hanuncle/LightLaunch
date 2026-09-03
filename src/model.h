@@ -50,9 +50,18 @@ struct Category {
     bool operator==(const Category&) const = default;
 };
 
+struct RailAppearance {
+    std::uint32_t backgroundColor = 0x00E7EAE6U;
+    std::uint8_t transparencyPercent = 9;
+    std::uint32_t borderColor = 0x00F9FBFAU;
+
+    bool operator==(const RailAppearance&) const = default;
+};
+
 struct AppState {
     std::vector<Category> categories;
     std::size_t selectedCategory = 0;
+    RailAppearance railAppearance;
 
     bool operator==(const AppState&) const = default;
 };

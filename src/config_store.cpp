@@ -469,6 +469,23 @@ bool ConfigStore::LoadFrom(const std::wstring& path, AppState& state) const {
     }
 
     AppState loaded;
+    std::size_t railBackgroundColor = loaded.railAppearance.backgroundColor;
+    std::size_t railTransparency = loaded.railAppearance.transparencyPercent;
+    std::size_t railBorderColor = loaded.railAppearance.borderColor;
+    if (!ReadOptionalUnsigned(document, L"General", L"DockBackgroundColor",
+                              0x00FFFFFFU, railBackgroundColor) ||
+        !ReadOptionalUnsigned(document, L"General", L"DockTransparency", 85,
+                              railTransparency) ||
+        !ReadOptionalUnsigned(document, L"General", L"DockBorderColor",
+                              0x00FFFFFFU, railBorderColor)) {
+        return false;
+    }
+    loaded.railAppearance.backgroundColor =
+        static_cast<std::uint32_t>(railBackgroundColor);
+    loaded.railAppearance.transparencyPercent =
+        static_cast<std::uint8_t>(railTransparency);
+    loaded.railAppearance.borderColor =
+        static_cast<std::uint32_t>(railBorderColor);
     loaded.categories.reserve(categoryCount);
 
     for (std::size_t categoryIndex = 0; categoryIndex < categoryCount; ++categoryIndex) {
@@ -597,7 +614,10 @@ bool ConfigStore::Save(const AppState& state) const {
 bool ConfigStore::WriteTo(const std::wstring& path, const AppState& state) const {
     if (state.categories.size() > kMaximumCategories ||
         (state.categories.empty() ? state.selectedCategory != 0
-                                  : state.selectedCategory >= state.categories.size())) {
+                                  : state.selectedCategory >= state.categories.size()) ||
+        state.railAppearance.backgroundColor > 0x00FFFFFFU ||
+        state.railAppearance.transparencyPercent > 85 ||
+        state.railAppearance.borderColor > 0x00FFFFFFU) {
         return false;
     }
 
@@ -605,6 +625,12 @@ bool ConfigStore::WriteTo(const std::wstring& path, const AppState& state) const
     AppendSetting(document, L"SchemaVersion", std::to_wstring(kSchemaVersion));
     AppendSetting(document, L"CategoryCount", std::to_wstring(state.categories.size()));
     AppendSetting(document, L"SelectedCategory", std::to_wstring(state.selectedCategory));
+    AppendSetting(document, L"DockBackgroundColor",
+                  std::to_wstring(state.railAppearance.backgroundColor));
+    AppendSetting(document, L"DockTransparency",
+                  std::to_wstring(state.railAppearance.transparencyPercent));
+    AppendSetting(document, L"DockBorderColor",
+                  std::to_wstring(state.railAppearance.borderColor));
 
     for (std::size_t categoryIndex = 0; categoryIndex < state.categories.size(); ++categoryIndex) {
         const Category& category = state.categories[categoryIndex];

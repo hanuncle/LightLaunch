@@ -138,6 +138,7 @@ private:
     void ShowItemContextMenu(int itemIndex);
     void ShowContentContextMenu();
     void ShowCategoryContextMenu(POINT screenPoint);
+    void ShowRailAppearanceSettings();
 
     std::optional<std::wstring> PickApplication() const;
     std::optional<std::wstring> PickFolder() const;

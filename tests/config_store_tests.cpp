@@ -51,6 +51,7 @@ std::wstring TemporaryConfigPath() {
 
 bool StatesEqual(const lightlaunch::AppState& left, const lightlaunch::AppState& right) {
     if (left.selectedCategory != right.selectedCategory ||
+        left.railAppearance != right.railAppearance ||
         left.categories.size() != right.categories.size()) {
         return false;
     }
@@ -89,6 +90,9 @@ int wmain() {
 
     lightlaunch::AppState expected;
     expected.selectedCategory = 1;
+    expected.railAppearance.backgroundColor = 0x00D9E6F0U;
+    expected.railAppearance.transparencyPercent = 42;
+    expected.railAppearance.borderColor = 0x00B8A690U;
     expected.categories = {
         {L"常用", {{L"记事本", L"C:\\Windows\\System32\\notepad.exe", L"\"完整参数\"", L"C:\\Windows\\System32"}}},
         {L"游戏开发", {

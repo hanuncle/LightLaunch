@@ -3,6 +3,7 @@
 #include "background_dialog.h"
 #include "background_image.h"
 #include "input_dialog.h"
+#include "rail_appearance_dialog.h"
 #include "reorder.h"
 
 #include <windows.h>
@@ -140,6 +141,7 @@ constexpr UINT kMenuMoveBase = 4100;
 constexpr UINT kMenuCategoryNew = 4201;
 constexpr UINT kMenuCategoryRename = 4202;
 constexpr UINT kMenuCategoryDelete = 4203;
+constexpr UINT kMenuRailAppearanceSettings = 4204;
 constexpr UINT kMenuContentAddTarget = 4301;
 constexpr UINT kMenuContentAddFolder = 4302;
 constexpr UINT kMenuFenceBackgroundSettings = 4401;
@@ -189,14 +191,6 @@ constexpr int kCategoryCardLogicalHeight = 62;
 constexpr int kCategoryPreviewFrameLogicalSize = 38;
 constexpr int kCategoryPreviewLogicalSize = 12;
 constexpr int kCategoryPreviewLogicalGap = 3;
-constexpr BYTE kRailPanelOpacity = 232;
-constexpr int kRailPanelTopRed = 244;
-constexpr int kRailPanelTopGreen = 246;
-constexpr int kRailPanelTopBlue = 244;
-constexpr int kRailPanelBottomRed = 216;
-constexpr int kRailPanelBottomGreen = 221;
-constexpr int kRailPanelBottomBlue = 218;
-constexpr COLORREF kRailPanelBorderColor = RGB(250, 251, 249);
 
 bool HasExceededDragThreshold(POINT origin, POINT current) {
     return std::abs(current.x - origin.x) >= GetSystemMetrics(SM_CXDRAG) ||
@@ -217,6 +211,22 @@ BYTE FenceOpacity(const FenceBackground& settings) {
 
 COLORREF FenceConfiguredBorderColor(const FenceBackground& settings) {
     return static_cast<COLORREF>(settings.borderColor & 0x00FFFFFFU);
+}
+
+BYTE RailOpacity(const RailAppearance& appearance) {
+    const unsigned int transparency =
+        std::min<unsigned int>(appearance.transparencyPercent, 85U);
+    return static_cast<BYTE>(
+        std::clamp(MulDiv(255, static_cast<int>(100U - transparency), 100),
+                   1, 255));
+}
+
+COLORREF RailBackgroundColor(const RailAppearance& appearance) {
+    return static_cast<COLORREF>(appearance.backgroundColor & 0x00FFFFFFU);
+}
+
+COLORREF RailBorderColor(const RailAppearance& appearance) {
+    return static_cast<COLORREF>(appearance.borderColor & 0x00FFFFFFU);
 }
 
 bool IsDarkFenceSurface(COLORREF color) {
@@ -1630,7 +1640,7 @@ bool Application::CreateControls() {
     // otherwise transparent surface available for blank-area context menus.
     if (railInputWindow_ == nullptr ||
         !SetLayeredWindowAttributes(railInputWindow_, kRailTransparencyColor,
-                                    kRailPanelOpacity,
+                                    RailOpacity(state_.railAppearance),
                                     LWA_COLORKEY | LWA_ALPHA)) {
         return false;
     }
@@ -1791,19 +1801,25 @@ void Application::DrawRailPanel(HDC deviceContext, const RECT& clientRect) const
         SelectClipRgn(deviceContext, panelRegion);
     }
 
+    const COLORREF baseColor = RailBackgroundColor(state_.railAppearance);
+    const bool darkSurface = IsDarkFenceSurface(baseColor);
+    const COLORREF topColor = BlendColor(
+        baseColor, RGB(255, 255, 255), darkSurface ? 12U : 55U);
+    const COLORREF bottomColor = BlendColor(
+        baseColor, RGB(0, 0, 0), darkSurface ? 12U : 6U);
     constexpr int kGradientBands = 40;
     for (int band = 0; band < kGradientBands; ++band) {
         const int top = clientRect.top + height * band / kGradientBands;
         const int bottom = clientRect.top + height * (band + 1) / kGradientBands;
         const int denominator = std::max(1, kGradientBands - 1);
-        const int red = kRailPanelTopRed +
-                        (kRailPanelBottomRed - kRailPanelTopRed) * band /
+        const int red = GetRValue(topColor) +
+                        (GetRValue(bottomColor) - GetRValue(topColor)) * band /
                             denominator;
-        const int green = kRailPanelTopGreen +
-                          (kRailPanelBottomGreen - kRailPanelTopGreen) * band /
+        const int green = GetGValue(topColor) +
+                          (GetGValue(bottomColor) - GetGValue(topColor)) * band /
                               denominator;
-        const int blue = kRailPanelTopBlue +
-                         (kRailPanelBottomBlue - kRailPanelTopBlue) * band /
+        const int blue = GetBValue(topColor) +
+                         (GetBValue(bottomColor) - GetBValue(topColor)) * band /
                              denominator;
         const COLORREF bandColor =
             static_cast<COLORREF>(static_cast<BYTE>(red)) |
@@ -1823,7 +1839,7 @@ void Application::DrawRailPanel(HDC deviceContext, const RECT& clientRect) const
     }
 
     HPEN borderPen = CreatePen(PS_SOLID, std::max(1, ScaleForDpi(1, dpi_)),
-                               kRailPanelBorderColor);
+                               RailBorderColor(state_.railAppearance));
     HGDIOBJ oldPen = borderPen != nullptr ? SelectObject(deviceContext, borderPen) : nullptr;
     HGDIOBJ oldBrush = SelectObject(deviceContext, GetStockObject(HOLLOW_BRUSH));
     RoundRect(deviceContext, clientRect.left, clientRect.top,
@@ -1839,7 +1855,9 @@ void Application::DrawRailPanel(HDC deviceContext, const RECT& clientRect) const
     RECT innerRect = clientRect;
     InflateRect(&innerRect, -ScaleForDpi(1, dpi_), -ScaleForDpi(1, dpi_));
     HPEN innerPen = CreatePen(PS_SOLID, std::max(1, ScaleForDpi(1, dpi_)),
-                              RGB(202, 208, 204));
+                              BlendColor(baseColor,
+                                         RailBorderColor(state_.railAppearance),
+                                         34U));
     oldPen = innerPen != nullptr ? SelectObject(deviceContext, innerPen) : nullptr;
     oldBrush = SelectObject(deviceContext, GetStockObject(HOLLOW_BRUSH));
     RoundRect(deviceContext, innerRect.left, innerRect.top,
@@ -1859,7 +1877,10 @@ void Application::DrawRailPanel(HDC deviceContext, const RECT& clientRect) const
         ScaleForDpi(kRailFooterLogicalHeight + kRailBottomLogicalPadding,
                     dpi_);
     HPEN dividerPen = CreatePen(PS_SOLID, std::max(1, ScaleForDpi(1, dpi_)),
-                                RGB(177, 185, 180));
+                                BlendColor(baseColor,
+                                           darkSurface ? RGB(255, 255, 255)
+                                                       : RGB(0, 0, 0),
+                                           20U));
     oldPen = dividerPen != nullptr
                  ? SelectObject(deviceContext, dividerPen)
                  : nullptr;
@@ -4486,6 +4507,9 @@ void Application::ShowCategoryContextMenu(POINT screenPoint) {
     } else {
         AppendMenuW(menu, MF_STRING, kMenuCategoryNew, L"新建分组...");
     }
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kMenuRailAppearanceSettings,
+                L"Dock 外观设置...");
 
     SetForegroundWindow(window_);
     ++interactionDepth_;
@@ -4508,6 +4532,9 @@ void Application::ShowCategoryContextMenu(POINT screenPoint) {
         case kMenuCategoryDelete:
             DeleteCategory(static_cast<std::size_t>(categoryIndex));
             break;
+        case kMenuRailAppearanceSettings:
+            ShowRailAppearanceSettings();
+            break;
         default:
             break;
     }
@@ -4518,6 +4545,34 @@ void Application::ShowCategoryContextMenu(POINT screenPoint) {
                      : static_cast<WPARAM>(-1),
                  0);
     InvalidateRect(categoryList_, nullptr, FALSE);
+}
+
+void Application::ShowRailAppearanceSettings() {
+    if (window_ == nullptr || railInputWindow_ == nullptr) {
+        return;
+    }
+
+    ++interactionDepth_;
+    const std::optional<RailAppearance> updated = PromptForRailAppearance(
+        window_, instance_, state_.railAppearance);
+    interactionDepth_ = std::max(0, interactionDepth_ - 1);
+    keepVisibleUntil_ = GetTickCount64() + kInteractionKeepVisibleMilliseconds;
+    pointerOutsideSince_ = 0;
+    if (!updated.has_value() || *updated == state_.railAppearance) {
+        return;
+    }
+
+    const RailAppearance previous = state_.railAppearance;
+    state_.railAppearance = *updated;
+    if (!SaveState()) {
+        state_.railAppearance = previous;
+        return;
+    }
+
+    SetLayeredWindowAttributes(railInputWindow_, kRailTransparencyColor,
+                               RailOpacity(state_.railAppearance),
+                               LWA_COLORKEY | LWA_ALPHA);
+    InvalidateRect(railInputWindow_, nullptr, TRUE);
 }
 
 std::optional<std::wstring> Application::PickApplication() const {
