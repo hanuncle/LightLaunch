@@ -175,7 +175,10 @@ constexpr int kFenceResizeLogicalBorder = 7;
 constexpr int kFenceControlLogicalSize = 32;
 constexpr int kFenceContentLogicalPadding = 14;
 constexpr int kFenceStatusLogicalHeight = 24;
-constexpr BYTE kFenceOpacity = 232;
+// Default colour-only fences use a lighter glass treatment. Image-backed
+// fences retain the previous opacity so artwork does not become washed out.
+constexpr BYTE kFenceGlassOpacity = 176;
+constexpr BYTE kFenceImageOpacity = 232;
 constexpr COLORREF kDefaultFenceSurfaceColor = RGB(230, 234, 231);
 constexpr int kRailPanelLogicalWidth = 84;
 constexpr int kRailPanelLogicalMinimumHeight = 144;
@@ -206,6 +209,11 @@ bool HasExceededDragThreshold(POINT origin, POINT current) {
 
 COLORREF FenceSurfaceColor(const FenceBackground& settings) {
     return static_cast<COLORREF>(settings.backgroundColor & 0x00FFFFFFU);
+}
+
+BYTE FenceOpacity(const FenceBackground& settings) {
+    return settings.imagePath.empty() ? kFenceGlassOpacity
+                                      : kFenceImageOpacity;
 }
 
 bool IsDarkFenceSurface(COLORREF color) {
@@ -2110,7 +2118,10 @@ FenceWindow* Application::CreateFenceWindow(std::size_t categoryIndex) {
         WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN,
         x, y, width, height, nullptr, nullptr, instance_, fence.get());
     if (fence->window == nullptr ||
-        !SetLayeredWindowAttributes(fence->window, 0, kFenceOpacity, LWA_ALPHA)) {
+        !SetLayeredWindowAttributes(
+            fence->window, 0,
+            FenceOpacity(state_.categories[categoryIndex].background),
+            LWA_ALPHA)) {
         if (fence->window != nullptr) {
             DestroyWindow(fence->window);
         }
@@ -2339,8 +2350,11 @@ void Application::DrawFence(const FenceWindow& fence, HDC deviceContext,
             ? state_.categories[fence.categoryIndex].background
             : fallbackBackground;
     const COLORREF surfaceColor = FenceSurfaceColor(settings);
+    const bool darkSurface = IsDarkFenceSurface(surfaceColor);
+    const COLORREF headerColor = BlendColor(
+        surfaceColor, RGB(255, 255, 255), darkSurface ? 8U : 18U);
     HBRUSH bodyBrush = CreateSolidBrush(surfaceColor);
-    HBRUSH headerBrush = CreateSolidBrush(surfaceColor);
+    HBRUSH headerBrush = CreateSolidBrush(headerColor);
     FillRect(deviceContext, &clientRect,
              bodyBrush != nullptr ? bodyBrush
                                   : static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
@@ -2353,15 +2367,20 @@ void Application::DrawFence(const FenceWindow& fence, HDC deviceContext,
     if (bodyBrush != nullptr) DeleteObject(bodyBrush);
     if (headerBrush != nullptr) DeleteObject(headerBrush);
 
-    HPEN separator =
-        CreatePen(PS_SOLID, 1, FenceSeparatorColor(surfaceColor));
+    HPEN separator = CreatePen(
+        PS_SOLID, 1,
+        darkSurface ? FenceSeparatorColor(surfaceColor)
+                    : BlendColor(surfaceColor, RGB(255, 255, 255), 62U));
     HGDIOBJ previousPen = separator != nullptr
                               ? SelectObject(deviceContext, separator)
                               : nullptr;
     MoveToEx(deviceContext, clientRect.left, header.bottom - 1, nullptr);
     LineTo(deviceContext, clientRect.right, header.bottom - 1);
 
-    HPEN border = CreatePen(PS_SOLID, 1, FenceBorderColor(surfaceColor));
+    HPEN border = CreatePen(
+        PS_SOLID, 1,
+        darkSurface ? FenceBorderColor(surfaceColor)
+                    : BlendColor(surfaceColor, RGB(255, 255, 255), 82U));
     if (border != nullptr) {
         SelectObject(deviceContext, border);
     }
@@ -2369,10 +2388,21 @@ void Application::DrawFence(const FenceWindow& fence, HDC deviceContext,
     const int radius = ScaleForDpi(kFenceLogicalRadius, fence.dpi) * 2;
     RoundRect(deviceContext, clientRect.left, clientRect.top,
               clientRect.right - 1, clientRect.bottom - 1, radius, radius);
+    HPEN innerBorder = CreatePen(
+        PS_SOLID, 1,
+        darkSurface ? BlendColor(surfaceColor, RGB(255, 255, 255), 14U)
+                    : BlendColor(surfaceColor, RGB(105, 119, 111), 18U));
+    if (innerBorder != nullptr) {
+        SelectObject(deviceContext, innerBorder);
+        RoundRect(deviceContext, clientRect.left + 1, clientRect.top + 1,
+                  clientRect.right - 2, clientRect.bottom - 2,
+                  std::max(2, radius - 2), std::max(2, radius - 2));
+    }
     SelectObject(deviceContext, previousBrush);
     if (previousPen != nullptr) SelectObject(deviceContext, previousPen);
     if (separator != nullptr) DeleteObject(separator);
     if (border != nullptr) DeleteObject(border);
+    if (innerBorder != nullptr) DeleteObject(innerBorder);
 
     const int previousMode = SetBkMode(deviceContext, TRANSPARENT);
     SetTextColor(deviceContext, FenceTextColor(surfaceColor));
@@ -2419,6 +2449,10 @@ void Application::RefreshFenceBackground(FenceWindow& fence,
 
     const FenceBackground& settings =
         state_.categories[fence.categoryIndex].background;
+    if (fence.window != nullptr && IsWindow(fence.window)) {
+        SetLayeredWindowAttributes(fence.window, 0, FenceOpacity(settings),
+                                   LWA_ALPHA);
+    }
     const bool sourceChanged = fence.loadedBackgroundPath != settings.imagePath;
     if (forceReload || sourceChanged) {
         fence.backgroundImage.reset();
@@ -2594,8 +2628,13 @@ void Application::DrawFenceButton(const FenceWindow& fence,
             ? state_.categories[fence.categoryIndex].background
             : fallbackBackground;
     const COLORREF surfaceColor = FenceSurfaceColor(settings);
+    const COLORREF controlSurface =
+        settings.imagePath.empty()
+            ? BlendColor(surfaceColor, RGB(255, 255, 255),
+                         IsDarkFenceSurface(surfaceColor) ? 8U : 18U)
+            : surfaceColor;
     const bool darkSurface = IsDarkFenceSurface(surfaceColor);
-    HBRUSH base = CreateSolidBrush(surfaceColor);
+    HBRUSH base = CreateSolidBrush(controlSurface);
     FillRect(drawItem.hDC, &bounds, base);
     if (base != nullptr) DeleteObject(base);
     const bool pressed = (drawItem.itemState & ODS_SELECTED) != 0;
