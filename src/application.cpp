@@ -175,10 +175,6 @@ constexpr int kFenceResizeLogicalBorder = 7;
 constexpr int kFenceControlLogicalSize = 32;
 constexpr int kFenceContentLogicalPadding = 14;
 constexpr int kFenceStatusLogicalHeight = 24;
-// Default colour-only fences use a lighter glass treatment. Image-backed
-// fences retain the previous opacity so artwork does not become washed out.
-constexpr BYTE kFenceGlassOpacity = 176;
-constexpr BYTE kFenceImageOpacity = 232;
 constexpr COLORREF kDefaultFenceSurfaceColor = RGB(230, 234, 231);
 constexpr int kRailPanelLogicalWidth = 84;
 constexpr int kRailPanelLogicalMinimumHeight = 144;
@@ -212,8 +208,15 @@ COLORREF FenceSurfaceColor(const FenceBackground& settings) {
 }
 
 BYTE FenceOpacity(const FenceBackground& settings) {
-    return settings.imagePath.empty() ? kFenceGlassOpacity
-                                      : kFenceImageOpacity;
+    const unsigned int transparency =
+        std::min<unsigned int>(settings.transparencyPercent, 85U);
+    return static_cast<BYTE>(
+        std::clamp(MulDiv(255, static_cast<int>(100U - transparency), 100),
+                   1, 255));
+}
+
+COLORREF FenceConfiguredBorderColor(const FenceBackground& settings) {
+    return static_cast<COLORREF>(settings.borderColor & 0x00FFFFFFU);
 }
 
 bool IsDarkFenceSurface(COLORREF color) {
@@ -231,11 +234,6 @@ COLORREF FenceTextColor(COLORREF surface) {
 COLORREF FenceMutedTextColor(COLORREF surface) {
     return IsDarkFenceSurface(surface) ? RGB(165, 172, 188)
                                        : RGB(91, 101, 95);
-}
-
-COLORREF FenceBorderColor(COLORREF surface) {
-    return IsDarkFenceSurface(surface) ? RGB(61, 68, 84)
-                                       : RGB(177, 185, 180);
 }
 
 COLORREF FenceSeparatorColor(COLORREF surface) {
@@ -2377,10 +2375,8 @@ void Application::DrawFence(const FenceWindow& fence, HDC deviceContext,
     MoveToEx(deviceContext, clientRect.left, header.bottom - 1, nullptr);
     LineTo(deviceContext, clientRect.right, header.bottom - 1);
 
-    HPEN border = CreatePen(
-        PS_SOLID, 1,
-        darkSurface ? FenceBorderColor(surfaceColor)
-                    : BlendColor(surfaceColor, RGB(255, 255, 255), 82U));
+    const COLORREF borderColor = FenceConfiguredBorderColor(settings);
+    HPEN border = CreatePen(PS_SOLID, 1, borderColor);
     if (border != nullptr) {
         SelectObject(deviceContext, border);
     }
@@ -2390,8 +2386,7 @@ void Application::DrawFence(const FenceWindow& fence, HDC deviceContext,
               clientRect.right - 1, clientRect.bottom - 1, radius, radius);
     HPEN innerBorder = CreatePen(
         PS_SOLID, 1,
-        darkSurface ? BlendColor(surfaceColor, RGB(255, 255, 255), 14U)
-                    : BlendColor(surfaceColor, RGB(105, 119, 111), 18U));
+        BlendColor(surfaceColor, borderColor, darkSurface ? 28U : 34U));
     if (innerBorder != nullptr) {
         SelectObject(deviceContext, innerBorder);
         RoundRect(deviceContext, clientRect.left + 1, clientRect.top + 1,

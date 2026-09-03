@@ -107,6 +107,8 @@ int wmain() {
     expected.categories[1].background.cropX = 2375;
     expected.categories[1].background.cropY = 8125;
     expected.categories[1].background.backgroundColor = 0x007E5C2AU;
+    expected.categories[1].background.transparencyPercent = 54;
+    expected.categories[1].background.borderColor = 0x00D8C5A4U;
 
     bool success = true;
     std::vector<int> reordered{0, 1, 2, 3};

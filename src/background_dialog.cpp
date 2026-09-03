@@ -27,6 +27,10 @@ constexpr int kCropYSliderId = 6110;
 constexpr int kCropYValueId = 6111;
 constexpr int kColorSwatchId = 6112;
 constexpr int kChooseColorButtonId = 6113;
+constexpr int kTransparencySliderId = 6114;
+constexpr int kTransparencyValueId = 6115;
+constexpr int kBorderSwatchId = 6116;
+constexpr int kChooseBorderButtonId = 6117;
 constexpr UINT_PTR kPreviewSubclassId = 1;
 
 struct DialogState {
@@ -36,9 +40,12 @@ struct DialogState {
     HWND pathEdit = nullptr;
     HWND preview = nullptr;
     HWND colorSwatch = nullptr;
+    HWND borderSwatch = nullptr;
     HWND modeCombo = nullptr;
     HWND opacitySlider = nullptr;
     HWND opacityValue = nullptr;
+    HWND transparencySlider = nullptr;
+    HWND transparencyValue = nullptr;
     HWND cropXSlider = nullptr;
     HWND cropXValue = nullptr;
     HWND cropYSlider = nullptr;
@@ -57,6 +64,10 @@ int Scale(int logical, UINT dpi) {
 
 COLORREF BackgroundColor(const FenceBackground& background) {
     return static_cast<COLORREF>(background.backgroundColor & 0x00FFFFFFU);
+}
+
+COLORREF BorderColor(const FenceBackground& background) {
+    return static_cast<COLORREF>(background.borderColor & 0x00FFFFFFU);
 }
 
 bool IsDarkColor(COLORREF color) {
@@ -94,17 +105,22 @@ void RefreshDialog(DialogState& state) {
     }
     const unsigned int opacity = static_cast<unsigned int>(
         SendMessageW(state.opacitySlider, TBM_GETPOS, 0, 0));
+    const unsigned int transparency = static_cast<unsigned int>(
+        SendMessageW(state.transparencySlider, TBM_GETPOS, 0, 0));
     const unsigned int cropX = static_cast<unsigned int>(
         SendMessageW(state.cropXSlider, TBM_GETPOS, 0, 0));
     const unsigned int cropY = static_cast<unsigned int>(
         SendMessageW(state.cropYSlider, TBM_GETPOS, 0, 0));
     state.working.opacityPercent =
         static_cast<std::uint8_t>(std::min(opacity, 100U));
+    state.working.transparencyPercent =
+        static_cast<std::uint8_t>(std::min(transparency, 85U));
     state.working.cropX =
         static_cast<std::uint16_t>(std::min(cropX, 10000U));
     state.working.cropY =
         static_cast<std::uint16_t>(std::min(cropY, 10000U));
     SetPercentLabel(state.opacityValue, opacity);
+    SetPercentLabel(state.transparencyValue, transparency);
     SetPercentLabel(state.cropXValue, (cropX + 50U) / 100U);
     SetPercentLabel(state.cropYValue, (cropY + 50U) / 100U);
     const BOOL cropEnabled =
@@ -117,6 +133,9 @@ void RefreshDialog(DialogState& state) {
     InvalidateRect(state.preview, nullptr, TRUE);
     if (state.colorSwatch != nullptr) {
         InvalidateRect(state.colorSwatch, nullptr, TRUE);
+    }
+    if (state.borderSwatch != nullptr) {
+        InvalidateRect(state.borderSwatch, nullptr, TRUE);
     }
 }
 
@@ -193,6 +212,29 @@ void ChooseBackgroundColor(DialogState& state) {
     }
 }
 
+void ChooseBorderColor(DialogState& state) {
+    static COLORREF customColors[16] = {
+        RGB(255, 255, 255), RGB(230, 234, 231), RGB(177, 185, 180),
+        RGB(105, 119, 111), RGB(34, 42, 37), RGB(214, 225, 236),
+        RGB(191, 210, 232), RGB(226, 214, 237), RGB(221, 229, 214),
+        RGB(238, 222, 205), RGB(235, 207, 207), RGB(207, 224, 226),
+        RGB(128, 136, 147), RGB(94, 105, 98), RGB(61, 68, 84),
+        RGB(17, 22, 33),
+    };
+
+    CHOOSECOLORW chooser{};
+    chooser.lStructSize = sizeof(chooser);
+    chooser.hwndOwner = state.window;
+    chooser.rgbResult = BorderColor(state.working);
+    chooser.lpCustColors = customColors;
+    chooser.Flags = CC_RGBINIT | CC_FULLOPEN;
+    if (ChooseColorW(&chooser)) {
+        state.working.borderColor = static_cast<std::uint32_t>(
+            chooser.rgbResult & 0x00FFFFFFUL);
+        RefreshDialog(state);
+    }
+}
+
 void DrawPreview(DialogState& state, const DRAWITEMSTRUCT& item) {
     RECT client = item.rcItem;
     const COLORREF surfaceColor = BackgroundColor(state.working);
@@ -232,9 +274,7 @@ void DrawPreview(DialogState& state, const DRAWITEMSTRUCT& item) {
         SetBkMode(item.hDC, previousMode);
     }
 
-    HPEN border = CreatePen(PS_SOLID, 1,
-                            IsDarkColor(surfaceColor) ? RGB(92, 99, 115)
-                                                      : RGB(172, 181, 175));
+    HPEN border = CreatePen(PS_SOLID, 1, BorderColor(state.working));
     HGDIOBJ oldPen = border != nullptr ? SelectObject(item.hDC, border) : nullptr;
     HGDIOBJ oldBrush = SelectObject(item.hDC, GetStockObject(NULL_BRUSH));
     Rectangle(item.hDC, client.left, client.top, client.right, client.bottom);
@@ -247,8 +287,7 @@ void DrawPreview(DialogState& state, const DRAWITEMSTRUCT& item) {
     }
 }
 
-void DrawColorSwatch(DialogState& state, const DRAWITEMSTRUCT& item) {
-    const COLORREF color = BackgroundColor(state.working);
+void DrawColorSwatch(COLORREF color, const DRAWITEMSTRUCT& item) {
     HBRUSH fill = CreateSolidBrush(color);
     FillRect(item.hDC, &item.rcItem,
              fill != nullptr
@@ -367,30 +406,49 @@ bool CreateControls(DialogState& state) {
     state.opacityValue = AddControl(state, L"STATIC", L"", SS_RIGHT,
                                     kOpacityValueId, 458, 360, 60, 24);
 
-    AddControl(state, L"STATIC", L"横向裁切焦点", 0, -1, 18, 400, 118, 24);
+    AddControl(state, L"STATIC", L"背景透明度", 0, -1, 18, 400, 118, 24);
+    state.transparencySlider = AddControl(
+        state, TRACKBAR_CLASSW, L"", WS_TABSTOP | TBS_HORZ | TBS_NOTICKS,
+        kTransparencySliderId, 146, 394, 300, 32);
+    state.transparencyValue = AddControl(
+        state, L"STATIC", L"", SS_RIGHT, kTransparencyValueId,
+        458, 400, 60, 24);
+
+    AddControl(state, L"STATIC", L"边框线颜色", 0, -1, 18, 440, 78, 24);
+    state.borderSwatch = AddControl(
+        state, L"STATIC", L"", WS_TABSTOP | SS_OWNERDRAW | SS_NOTIFY,
+        kBorderSwatchId, 104, 436, 36, 28);
+    HWND chooseBorder = AddControl(
+        state, L"BUTTON", L"选择颜色...", WS_TABSTOP,
+        kChooseBorderButtonId, 148, 436, 102, 28);
+
+    AddControl(state, L"STATIC", L"横向裁切焦点", 0, -1, 18, 480, 118, 24);
     state.cropXSlider = AddControl(
         state, TRACKBAR_CLASSW, L"", WS_TABSTOP | TBS_HORZ | TBS_NOTICKS,
-        kCropXSliderId, 146, 394, 300, 32);
+        kCropXSliderId, 146, 474, 300, 32);
     state.cropXValue = AddControl(state, L"STATIC", L"", SS_RIGHT,
-                                  kCropXValueId, 458, 400, 60, 24);
+                                  kCropXValueId, 458, 480, 60, 24);
 
-    AddControl(state, L"STATIC", L"纵向裁切焦点", 0, -1, 18, 440, 118, 24);
+    AddControl(state, L"STATIC", L"纵向裁切焦点", 0, -1, 18, 520, 118, 24);
     state.cropYSlider = AddControl(
         state, TRACKBAR_CLASSW, L"", WS_TABSTOP | TBS_HORZ | TBS_NOTICKS,
-        kCropYSliderId, 146, 434, 300, 32);
+        kCropYSliderId, 146, 514, 300, 32);
     state.cropYValue = AddControl(state, L"STATIC", L"", SS_RIGHT,
-                                  kCropYValueId, 458, 440, 60, 24);
+                                  kCropYValueId, 458, 520, 60, 24);
 
     HWND ok = AddControl(state, L"BUTTON", L"确定",
                          WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK,
-                         374, 482, 80, 30);
+                         374, 562, 80, 30);
     HWND cancel = AddControl(state, L"BUTTON", L"取消", WS_TABSTOP,
-                             IDCANCEL, 462, 482, 80, 30);
+                             IDCANCEL, 462, 562, 80, 30);
 
     if (state.pathEdit == nullptr || browse == nullptr || clear == nullptr ||
         state.preview == nullptr || state.colorSwatch == nullptr ||
-        chooseColor == nullptr || state.modeCombo == nullptr ||
+        chooseColor == nullptr || state.borderSwatch == nullptr ||
+        chooseBorder == nullptr || state.modeCombo == nullptr ||
         state.opacitySlider == nullptr || state.opacityValue == nullptr ||
+        state.transparencySlider == nullptr ||
+        state.transparencyValue == nullptr ||
         state.cropXSlider == nullptr || state.cropXValue == nullptr ||
         state.cropYSlider == nullptr || state.cropYValue == nullptr ||
         ok == nullptr || cancel == nullptr) {
@@ -401,16 +459,22 @@ bool CreateControls(DialogState& state) {
                       kPreviewSubclassId,
                       reinterpret_cast<DWORD_PTR>(&state));
     SendMessageW(state.opacitySlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+    SendMessageW(state.transparencySlider, TBM_SETRANGE, TRUE,
+                 MAKELPARAM(0, 85));
     SendMessageW(state.cropXSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 10000));
     SendMessageW(state.cropYSlider, TBM_SETRANGE, TRUE, MAKELPARAM(0, 10000));
     SendMessageW(state.opacitySlider, TBM_SETLINESIZE, 0, 1);
     SendMessageW(state.opacitySlider, TBM_SETPAGESIZE, 0, 5);
+    SendMessageW(state.transparencySlider, TBM_SETLINESIZE, 0, 1);
+    SendMessageW(state.transparencySlider, TBM_SETPAGESIZE, 0, 5);
     SendMessageW(state.cropXSlider, TBM_SETLINESIZE, 0, 100);
     SendMessageW(state.cropXSlider, TBM_SETPAGESIZE, 0, 500);
     SendMessageW(state.cropYSlider, TBM_SETLINESIZE, 0, 100);
     SendMessageW(state.cropYSlider, TBM_SETPAGESIZE, 0, 500);
     SendMessageW(state.opacitySlider, TBM_SETPOS, TRUE,
                  state.working.opacityPercent);
+    SendMessageW(state.transparencySlider, TBM_SETPOS, TRUE,
+                 state.working.transparencyPercent);
     SendMessageW(state.cropXSlider, TBM_SETPOS, TRUE,
                  state.working.cropX);
     SendMessageW(state.cropYSlider, TBM_SETPOS, TRUE,
@@ -460,6 +524,14 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam,
                 case kChooseColorButtonId:
                     ChooseBackgroundColor(*state);
                     return 0;
+                case kBorderSwatchId:
+                    if (HIWORD(wParam) == STN_CLICKED) {
+                        ChooseBorderColor(*state);
+                    }
+                    return 0;
+                case kChooseBorderButtonId:
+                    ChooseBorderColor(*state);
+                    return 0;
                 case kModeComboId:
                     if (HIWORD(wParam) == CBN_SELCHANGE) {
                         RefreshDialog(*state);
@@ -481,6 +553,8 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam,
             break;
         case WM_HSCROLL:
             if (reinterpret_cast<HWND>(lParam) == state->opacitySlider ||
+                reinterpret_cast<HWND>(lParam) ==
+                    state->transparencySlider ||
                 reinterpret_cast<HWND>(lParam) == state->cropXSlider ||
                 reinterpret_cast<HWND>(lParam) == state->cropYSlider) {
                 RefreshDialog(*state);
@@ -495,7 +569,11 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam,
                     return TRUE;
                 }
                 if (item->CtlID == kColorSwatchId) {
-                    DrawColorSwatch(*state, *item);
+                    DrawColorSwatch(BackgroundColor(state->working), *item);
+                    return TRUE;
+                }
+                if (item->CtlID == kBorderSwatchId) {
+                    DrawColorSwatch(BorderColor(state->working), *item);
                     return TRUE;
                 }
             }
@@ -552,7 +630,7 @@ std::optional<FenceBackground> PromptForFenceBackground(
         CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-    RECT bounds{0, 0, Scale(560, state.dpi), Scale(524, state.dpi)};
+    RECT bounds{0, 0, Scale(560, state.dpi), Scale(604, state.dpi)};
     AdjustWindowRectExForDpi(&bounds, WS_CAPTION | WS_SYSMENU | WS_POPUP,
                              FALSE, WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
                              state.dpi);

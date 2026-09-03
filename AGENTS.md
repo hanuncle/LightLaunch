@@ -74,6 +74,8 @@ BackgroundOpacity=45
 BackgroundCropX=5000
 BackgroundCropY=5000
 BackgroundColor=15198950
+FenceTransparency=31
+FenceBorderColor=16777215
 ItemCount=0
 ```
 

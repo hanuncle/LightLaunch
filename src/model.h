@@ -34,6 +34,10 @@ struct FenceBackground {
     // Win32 COLORREF layout (0x00BBGGRR). This is the midpoint of the
     // category Dock's light glass gradient: RGB(230, 234, 231).
     std::uint32_t backgroundColor = 0x00E7EAE6U;
+    // Percentage of the complete fence surface that remains transparent.
+    // Kept below 100 so a fence can never become impossible to recover.
+    std::uint8_t transparencyPercent = 31;
+    std::uint32_t borderColor = 0x00FFFFFFU;
 
     bool operator==(const FenceBackground&) const = default;
 };

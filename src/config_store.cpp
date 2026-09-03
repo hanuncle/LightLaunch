@@ -479,16 +479,24 @@ bool ConfigStore::LoadFrom(const std::wstring& path, AppState& state) const {
             return false;
         }
 
+        if (!ReadOptionalString(document, section, L"BackgroundImage", true,
+                                requireEncoding,
+                                category.background.imagePath)) {
+            return false;
+        }
+
         std::size_t backgroundMode =
             static_cast<std::size_t>(category.background.mode);
         std::size_t backgroundOpacity = category.background.opacityPercent;
         std::size_t backgroundCropX = category.background.cropX;
         std::size_t backgroundCropY = category.background.cropY;
         std::size_t backgroundColor = category.background.backgroundColor;
-        if (!ReadOptionalString(document, section, L"BackgroundImage", true,
-                                requireEncoding,
-                                category.background.imagePath) ||
-            !ReadOptionalUnsigned(document, section, L"BackgroundMode",
+        // Preserve the appearance of image backgrounds written by builds
+        // before the independent fence-transparency setting existed.
+        std::size_t fenceTransparency =
+            category.background.imagePath.empty() ? 31U : 9U;
+        std::size_t fenceBorderColor = category.background.borderColor;
+        if (!ReadOptionalUnsigned(document, section, L"BackgroundMode",
                                   static_cast<std::size_t>(
                                       FenceBackgroundMode::Stretch),
                                   backgroundMode) ||
@@ -499,7 +507,11 @@ bool ConfigStore::LoadFrom(const std::wstring& path, AppState& state) const {
             !ReadOptionalUnsigned(document, section, L"BackgroundCropY", 10000,
                                   backgroundCropY) ||
             !ReadOptionalUnsigned(document, section, L"BackgroundColor",
-                                  0x00FFFFFFU, backgroundColor)) {
+                                  0x00FFFFFFU, backgroundColor) ||
+            !ReadOptionalUnsigned(document, section, L"FenceTransparency", 85,
+                                  fenceTransparency) ||
+            !ReadOptionalUnsigned(document, section, L"FenceBorderColor",
+                                  0x00FFFFFFU, fenceBorderColor)) {
             return false;
         }
         category.background.mode =
@@ -512,6 +524,10 @@ bool ConfigStore::LoadFrom(const std::wstring& path, AppState& state) const {
             static_cast<std::uint16_t>(backgroundCropY);
         category.background.backgroundColor =
             static_cast<std::uint32_t>(backgroundColor);
+        category.background.transparencyPercent =
+            static_cast<std::uint8_t>(fenceTransparency);
+        category.background.borderColor =
+            static_cast<std::uint32_t>(fenceBorderColor);
 
         std::size_t itemCount = 0;
         if (!ReadUnsigned(document, section, L"ItemCount", kMaximumItemsPerCategory,
@@ -601,7 +617,9 @@ bool ConfigStore::WriteTo(const std::wstring& path, const AppState& state) const
             category.background.opacityPercent > 100 ||
             category.background.cropX > 10000 ||
             category.background.cropY > 10000 ||
-            category.background.backgroundColor > 0x00FFFFFFU) {
+            category.background.backgroundColor > 0x00FFFFFFU ||
+            category.background.transparencyPercent > 85 ||
+            category.background.borderColor > 0x00FFFFFFU) {
             return false;
         }
         const std::wstring section = CategorySection(categoryIndex);
@@ -619,6 +637,11 @@ bool ConfigStore::WriteTo(const std::wstring& path, const AppState& state) const
                       std::to_wstring(category.background.cropY));
         AppendSetting(document, L"BackgroundColor",
                       std::to_wstring(category.background.backgroundColor));
+        AppendSetting(document, L"FenceTransparency",
+                      std::to_wstring(
+                          category.background.transparencyPercent));
+        AppendSetting(document, L"FenceBorderColor",
+                      std::to_wstring(category.background.borderColor));
         AppendSetting(document, L"ItemCount", std::to_wstring(category.items.size()));
 
         for (std::size_t itemIndex = 0; itemIndex < category.items.size(); ++itemIndex) {
