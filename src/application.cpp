@@ -522,10 +522,51 @@ Application::Application(HINSTANCE instance, std::wstring configPath,
 Application::~Application() = default;
 
 int Application::Run(int showCommand) {
-    if (!config_.Load(state_)) {
-        state_.categories.push_back(Category{L"常用", {}});
-        state_.selectedCategory = 0;
-        SaveState(false);
+    const ConfigLoadOutcome loadOutcome = config_.LoadDetailed(state_);
+    switch (loadOutcome.result) {
+        case ConfigLoadResult::LoadedPrimary:
+            break;
+
+        case ConfigLoadResult::LoadedBackup: {
+            loadedFromBackup_ = true;
+            const std::wstring message =
+                L"主配置暂时无法读取，LightLaunch 已从备份加载数据。\n\n"
+                L"为保护原文件，仅关闭程序不会覆盖主配置；首次修改内容时会再次询问。\n\n"
+                L"配置文件：\n" +
+                config_.Path() + L"\n\n原因：" +
+                WindowsErrorMessage(loadOutcome.win32Error);
+            MessageBoxW(nullptr, message.c_str(), L"已从配置备份恢复",
+                        MB_OK | MB_ICONWARNING);
+            break;
+        }
+
+        case ConfigLoadResult::NotFound: {
+            const std::wstring message =
+                L"没有找到配置文件或配置备份。\n\n是否创建新的空配置？\n\n配置文件：\n" +
+                config_.Path();
+            if (MessageBoxW(nullptr, message.c_str(), L"创建新配置",
+                            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+                return 0;
+            }
+            state_.categories.push_back(Category{L"常用", {}});
+            state_.selectedCategory = 0;
+            if (!SaveState()) {
+                return 1;
+            }
+            break;
+        }
+
+        case ConfigLoadResult::UnreadableOrInvalid: {
+            const std::wstring message =
+                L"无法安全读取配置文件及其备份。为防止空配置覆盖已有数据，"
+                L"LightLaunch 将退出。\n\n配置文件：\n" +
+                config_.Path() + L"\n\n原因：" +
+                WindowsErrorMessage(loadOutcome.win32Error) +
+                L"\n\n请稍后重试；原配置不会被修改。";
+            MessageBoxW(nullptr, message.c_str(), L"配置读取失败",
+                        MB_OK | MB_ICONERROR);
+            return 1;
+        }
     }
 
     if (!RegisterWindowClass()) {
@@ -1251,7 +1292,6 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 return 0;
             }
             if (trayIconAdded_) {
-                SaveState(false);
                 HideToTray();
             } else {
                 ExitApplication();
@@ -1263,7 +1303,6 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
         case WM_ENDSESSION:
             if (wParam != FALSE) {
-                SaveState(false);
                 DestroyWindow(window_);
             }
             return 0;
@@ -3300,7 +3339,6 @@ void Application::ExitApplication() {
         return;
     }
 
-    SaveState(false);
     DestroyWindow(window_);
 }
 
@@ -3560,7 +3598,17 @@ void Application::ActivateCategory(std::size_t categoryIndex) {
     if (categoryIndex >= state_.categories.size()) {
         return;
     }
+    const std::size_t previousSelection = state_.selectedCategory;
+    const bool selectionChanged = previousSelection != categoryIndex;
     state_.selectedCategory = categoryIndex;
+    // Selection is the only state change that used to rely on the old
+    // unconditional exit save. Persist it immediately for a normally loaded
+    // primary config, but never turn a backup-recovery session into a write
+    // without the user's explicit recovery confirmation.
+    if (selectionChanged && !loadedFromBackup_ && !SaveState()) {
+        state_.selectedCategory = previousSelection;
+        return;
+    }
     if (categoryList_ != nullptr) {
         SendMessageW(categoryList_, LB_SETCURSEL,
                      static_cast<WPARAM>(categoryIndex / kCategoryColumns), 0);
@@ -4624,14 +4672,37 @@ std::optional<std::wstring> Application::PickFolder() const {
     return std::wstring(path.data());
 }
 
-bool Application::SaveState(bool showError) const {
-    if (config_.Save(state_)) {
+bool Application::SaveState() {
+    std::wstring preservedPrimaryPath;
+    bool saveRecovered = false;
+    if (loadedFromBackup_) {
+        const std::wstring confirmation =
+            L"当前数据来自配置备份。保存这次修改会用当前恢复的数据替换"
+            L"无法读取的主配置。\n\n是否继续保存？\n\n" +
+            config_.Path();
+        if (MessageBoxW(DialogOwner(), confirmation.c_str(), L"确认恢复配置",
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+            return false;
+        }
+        saveRecovered = true;
+    }
+
+    const bool saved = saveRecovered
+                           ? config_.SaveRecovered(state_, &preservedPrimaryPath)
+                           : config_.Save(state_);
+    if (saved) {
+        loadedFromBackup_ = false;
+        if (!preservedPrimaryPath.empty()) {
+            const std::wstring message =
+                L"配置已恢复保存。原主配置已保留为：\n\n" +
+                preservedPrimaryPath;
+            MessageBoxW(DialogOwner(), message.c_str(), L"配置恢复完成",
+                        MB_OK | MB_ICONINFORMATION);
+        }
         return true;
     }
-    if (showError) {
-        const std::wstring message = L"无法保存配置：\n\n" + config_.Path();
-        MessageBoxW(DialogOwner(), message.c_str(), L"保存失败", MB_OK | MB_ICONERROR);
-    }
+    const std::wstring message = L"无法保存配置：\n\n" + config_.Path();
+    MessageBoxW(DialogOwner(), message.c_str(), L"保存失败", MB_OK | MB_ICONERROR);
     return false;
 }
 

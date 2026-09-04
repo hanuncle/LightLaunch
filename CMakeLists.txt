@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(LightLaunch VERSION 0.1.0 LANGUAGES CXX RC)
+project(LightLaunch VERSION 0.1.1 LANGUAGES CXX RC)
 
 option(LIGHTLAUNCH_BUILD_TESTS "Build LightLaunch tests" ON)
 
@@ -11,6 +11,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
+
+set(LIGHTLAUNCH_GENERATED_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${LIGHTLAUNCH_GENERATED_DIRECTORY}")
+configure_file(
+    resources/LightLaunchVersion.h.in
+    "${LIGHTLAUNCH_GENERATED_DIRECTORY}/LightLaunchVersion.h"
+    @ONLY
+)
 
 add_library(lightlaunch_core STATIC
     src/config_store.cpp
@@ -37,9 +45,9 @@ add_executable(LightLaunch WIN32
     resources/LightLaunch.rc
 )
 
-target_include_directories(LightLaunch PRIVATE src)
-target_compile_definitions(LightLaunch PRIVATE
-    LIGHTLAUNCH_VERSION=L"${PROJECT_VERSION}"
+target_include_directories(LightLaunch PRIVATE
+    src
+    "${LIGHTLAUNCH_GENERATED_DIRECTORY}"
 )
 target_link_libraries(LightLaunch PRIVATE
     lightlaunch_core

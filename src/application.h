@@ -142,7 +142,7 @@ private:
 
     std::optional<std::wstring> PickApplication() const;
     std::optional<std::wstring> PickFolder() const;
-    bool SaveState(bool showError = true) const;
+    bool SaveState();
 
     static std::wstring DisplayNameForTarget(const std::wstring& target);
     static std::wstring DirectoryForTarget(const std::wstring& target);
@@ -163,6 +163,7 @@ private:
     UINT taskbarCreatedMessage_ = 0;
     bool trayIconAdded_ = false;
     bool pinned_ = false;
+    bool loadedFromBackup_ = false;
     HMONITOR panelMonitor_ = nullptr;
     ULONGLONG pointerOutsideSince_ = 0;
     ULONGLONG keepVisibleUntil_ = 0;

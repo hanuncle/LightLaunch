@@ -13,3 +13,10 @@ out/
 *.lastbuildstate
 *.recipe
 *.log
+
+# Local launcher data and recovery snapshots must never enter source packages.
+config.ini
+config.ini.bak
+config.ini.tmp
+config.ini.bak.tmp
+config.ini.pre-recovery-*.bak

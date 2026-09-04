@@ -3,8 +3,12 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -47,6 +51,48 @@ std::wstring TemporaryConfigPath() {
         return {};
     }
     return temporaryFile;
+}
+
+bool FileExists(const std::wstring& path) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::vector<unsigned char> ReadFileBytes(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 ||
+        size.QuadPart > static_cast<LONGLONG>(MAXDWORD)) {
+        CloseHandle(file);
+        return {};
+    }
+
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(size.QuadPart));
+    const DWORD byteCount = static_cast<DWORD>(bytes.size());
+    DWORD totalRead = 0;
+    bool success = true;
+    while (totalRead < byteCount) {
+        DWORD bytesRead = 0;
+        const DWORD remaining = byteCount - totalRead;
+        if (!ReadFile(file, bytes.data() + totalRead, remaining, &bytesRead,
+                      nullptr) ||
+            bytesRead == 0) {
+            success = false;
+            break;
+        }
+        totalRead += bytesRead;
+    }
+    CloseHandle(file);
+    return success && totalRead == byteCount
+               ? bytes
+               : std::vector<unsigned char>{};
 }
 
 bool StatesEqual(const lightlaunch::AppState& left, const lightlaunch::AppState& right) {
@@ -115,6 +161,16 @@ int wmain() {
     expected.categories[1].background.borderColor = 0x00D8C5A4U;
 
     bool success = true;
+    std::vector<std::wstring> recoverySnapshots;
+    const auto saveRecovered = [&](const lightlaunch::ConfigStore& targetStore,
+                                   const lightlaunch::AppState& targetState) {
+        std::wstring snapshotPath;
+        const bool saved = targetStore.SaveRecovered(targetState, &snapshotPath);
+        if (!snapshotPath.empty()) {
+            recoverySnapshots.push_back(std::move(snapshotPath));
+        }
+        return saved;
+    };
     const lightlaunch::RailAppearance defaultRail;
     success &= Check(defaultRail.backgroundColor == 0x00F4F6F4U &&
                          defaultRail.transparencyPercent == 53 &&
@@ -140,6 +196,18 @@ int wmain() {
                          lightlaunch::RemapIndexAfterMove(1, 0, 2) == 0 &&
                          lightlaunch::RemapIndexAfterMove(2, 0, 2) == 1,
                      L"open fence indices should follow a forward category reorder");
+
+    lightlaunch::AppState missingState = expected;
+    const lightlaunch::ConfigLoadOutcome missingOutcome =
+        store.LoadDetailed(missingState);
+    success &= Check(missingOutcome.result == lightlaunch::ConfigLoadResult::NotFound,
+                     L"missing main and backup should be reported as NotFound");
+    success &= Check(StatesEqual(missingState, expected),
+                     L"a missing configuration must not mutate the caller state");
+    success &= Check(!FileExists(path) && !FileExists(path + L".bak") &&
+                         !FileExists(path + L".tmp"),
+                     L"loading a missing configuration must not create files");
+
     success &= Check(store.Save(expected), L"save should succeed");
 
     lightlaunch::AppState loaded;
@@ -160,11 +228,35 @@ int wmain() {
     }
 
     lightlaunch::AppState recovered;
-    success &= Check(store.Load(recovered), L"load should recover from backup");
+    const lightlaunch::ConfigLoadOutcome recoveryOutcome =
+        store.LoadDetailed(recovered);
+    success &= Check(recoveryOutcome.result ==
+                         lightlaunch::ConfigLoadResult::LoadedBackup &&
+                         recoveryOutcome.win32Error == ERROR_INVALID_DATA,
+                     L"load should report recovery from an invalid main config");
     success &= Check(StatesEqual(expected, recovered), L"backup should contain previous valid state");
 
+    const std::vector<unsigned char> corruptMainBeforeRecovery = ReadFileBytes(path);
+    const std::vector<unsigned char> goodBackupBeforeRecovery =
+        ReadFileBytes(path + L".bak");
+    success &= Check(!corruptMainBeforeRecovery.empty() &&
+                         !goodBackupBeforeRecovery.empty(),
+                     L"recovery fixtures should be readable before preservation");
     recovered.categories[0].name = L"从备份恢复后继续保存";
-    success &= Check(store.Save(recovered), L"save after backup recovery should succeed");
+    std::wstring preservedCorruptPath;
+    const bool recoveredSaved =
+        store.SaveRecovered(recovered, &preservedCorruptPath);
+    if (!preservedCorruptPath.empty()) {
+        recoverySnapshots.push_back(preservedCorruptPath);
+    }
+    success &= Check(recoveredSaved,
+                     L"explicit save after backup recovery should succeed");
+    success &= Check(!preservedCorruptPath.empty() &&
+                         ReadFileBytes(preservedCorruptPath) ==
+                             corruptMainBeforeRecovery,
+                     L"recovery should preserve the unreadable primary file");
+    success &= Check(ReadFileBytes(path + L".bak") == goodBackupBeforeRecovery,
+                     L"explicit recovery must preserve the known-good backup");
     lightlaunch::AppState afterRecoverySave;
     success &= Check(store.Load(afterRecoverySave), L"new main config should load after recovery save");
     success &= Check(StatesEqual(recovered, afterRecoverySave),
@@ -179,7 +271,8 @@ int wmain() {
     success &= Check(StatesEqual(recovered, truncatedRecovery),
                      L"general-only config must not be accepted as an empty state");
 
-    success &= Check(store.Save(newer), L"save should replace the truncated main config");
+    success &= Check(saveRecovered(store, newer),
+                     L"explicit recovery should replace the truncated main config");
     success &= Check(WritePrivateProfileStringW(L"Category.0", L"Name", L"b64:@@==",
                                                 path.c_str()) != FALSE,
                      L"encoded field corruption should be written");
@@ -190,7 +283,8 @@ int wmain() {
     success &= Check(StatesEqual(recovered, fieldRecovery),
                      L"malformed encoded field must invalidate the complete main config");
 
-    success &= Check(store.Save(newer), L"save should replace the malformed main config");
+    success &= Check(saveRecovered(store, newer),
+                     L"explicit recovery should replace the malformed main config");
     success &= Check(WritePrivateProfileStringW(L"Category.0.Item.0", L"WorkingDirectory",
                                                 nullptr, path.c_str()) != FALSE,
                      L"required empty-capable field should be removed for truncation test");
@@ -201,8 +295,8 @@ int wmain() {
     success &= Check(StatesEqual(recovered, missingFieldRecovery),
                      L"missing empty-capable field must invalidate the complete main config");
 
-    success &= Check(store.Save(newer),
-                     L"save should replace the missing-field main config");
+    success &= Check(saveRecovered(store, newer),
+                     L"explicit recovery should replace the missing-field main config");
     success &= Check(WritePrivateProfileStringW(
                          L"Category.0", L"BackgroundMode", L"9", path.c_str()) !=
                          FALSE,
@@ -214,7 +308,8 @@ int wmain() {
     success &= Check(StatesEqual(recovered, invalidBackgroundRecovery),
                      L"invalid background mode must invalidate the complete main config");
 
-    success &= Check(store.Save(expected), L"save should prepare the backup failure test");
+    success &= Check(saveRecovered(store, expected),
+                     L"explicit recovery should prepare the backup failure test");
     const std::wstring backupPath = path + L".bak";
     const bool backupMadeReadOnly =
         SetFileAttributesW(backupPath.c_str(), FILE_ATTRIBUTE_READONLY) != FALSE;
@@ -255,7 +350,281 @@ int wmain() {
         DeleteFileW((legacyPath + L".tmp").c_str());
     }
 
+    const std::wstring orphanBackupPath = TemporaryConfigPath();
+    success &= Check(!orphanBackupPath.empty(),
+                     L"orphan-backup test path should be created");
+    if (!orphanBackupPath.empty()) {
+        lightlaunch::ConfigStore backupWriter(orphanBackupPath + L".bak");
+        success &= Check(backupWriter.Save(expected),
+                         L"orphan backup should be prepared");
+        lightlaunch::ConfigStore orphanBackupStore(orphanBackupPath);
+        lightlaunch::AppState orphanBackupState;
+        const lightlaunch::ConfigLoadOutcome orphanBackupOutcome =
+            orphanBackupStore.LoadDetailed(orphanBackupState);
+        success &= Check(
+            orphanBackupOutcome.result ==
+                    lightlaunch::ConfigLoadResult::LoadedBackup &&
+                orphanBackupOutcome.win32Error == ERROR_FILE_NOT_FOUND,
+            L"a valid backup should load when the main file is missing");
+        success &= Check(StatesEqual(orphanBackupState, expected),
+                         L"orphan backup recovery should preserve state");
+        success &= Check(!FileExists(orphanBackupPath),
+                         L"loading an orphan backup must not create a main file");
+        const std::vector<unsigned char> orphanBackupBytes =
+            ReadFileBytes(orphanBackupPath + L".bak");
+        success &= Check(!orphanBackupBytes.empty(),
+                         L"orphan backup should be readable before lock tests");
+        HANDLE orphanBackupLock =
+            CreateFileW((orphanBackupPath + L".bak").c_str(),
+                        GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        success &= Check(orphanBackupLock != INVALID_HANDLE_VALUE,
+                         L"orphan backup lock should be acquired");
+        if (orphanBackupLock != INVALID_HANDLE_VALUE) {
+            lightlaunch::AppState blockedOrphanState = expected;
+            const lightlaunch::ConfigLoadOutcome blockedOrphanOutcome =
+                orphanBackupStore.LoadDetailed(blockedOrphanState);
+            success &= Check(
+                blockedOrphanOutcome.result ==
+                    lightlaunch::ConfigLoadResult::UnreadableOrInvalid,
+                L"a missing main and locked backup must not look like first run");
+            success &= Check(StatesEqual(blockedOrphanState, expected) &&
+                                 !FileExists(orphanBackupPath),
+                             L"locked orphan backup must not create or mutate state");
+            CloseHandle(orphanBackupLock);
+        }
+        success &= Check(ReadFileBytes(orphanBackupPath + L".bak") ==
+                             orphanBackupBytes,
+                         L"locked orphan backup must remain unchanged");
+
+        const std::wstring invalidMainText =
+            L"[General]\r\nSchemaVersion=2\r\nCategoryCount=1\r\n"
+            L"SelectedCategory=0\r\n";
+        success &= Check(WriteUnicodeText(orphanBackupPath, invalidMainText),
+                         L"invalid main should be prepared beside the backup");
+        const std::vector<unsigned char> invalidMainBytes =
+            ReadFileBytes(orphanBackupPath);
+        success &= Check(!invalidMainBytes.empty(),
+                         L"invalid main should be readable before lock tests");
+        orphanBackupLock =
+            CreateFileW((orphanBackupPath + L".bak").c_str(),
+                        GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        success &= Check(orphanBackupLock != INVALID_HANDLE_VALUE,
+                         L"backup lock beside invalid main should be acquired");
+        if (orphanBackupLock != INVALID_HANDLE_VALUE) {
+            lightlaunch::AppState blockedInvalidState = expected;
+            const lightlaunch::ConfigLoadOutcome blockedInvalidOutcome =
+                orphanBackupStore.LoadDetailed(blockedInvalidState);
+            success &= Check(
+                blockedInvalidOutcome.result ==
+                    lightlaunch::ConfigLoadResult::UnreadableOrInvalid,
+                L"an invalid main and locked backup must block startup");
+            success &= Check(StatesEqual(blockedInvalidState, expected),
+                             L"mixed load failure must preserve caller state");
+            CloseHandle(orphanBackupLock);
+        }
+        success &= Check(ReadFileBytes(orphanBackupPath) == invalidMainBytes &&
+                             ReadFileBytes(orphanBackupPath + L".bak") ==
+                                 orphanBackupBytes,
+                         L"mixed load failure must preserve both config files");
+        DeleteFileW(orphanBackupPath.c_str());
+        DeleteFileW((orphanBackupPath + L".bak").c_str());
+        DeleteFileW((orphanBackupPath + L".bak.bak").c_str());
+        DeleteFileW((orphanBackupPath + L".bak.tmp").c_str());
+        DeleteFileW((orphanBackupPath + L".tmp").c_str());
+    }
+
+    const std::wstring invalidPairPath = TemporaryConfigPath();
+    success &= Check(!invalidPairPath.empty(),
+                     L"invalid-pair test path should be created");
+    if (!invalidPairPath.empty()) {
+        const std::wstring invalidText =
+            L"[General]\r\nSchemaVersion=2\r\nCategoryCount=1\r\n"
+            L"SelectedCategory=0\r\n";
+        success &= Check(WriteUnicodeText(invalidPairPath, invalidText) &&
+                             WriteUnicodeText(invalidPairPath + L".bak", invalidText),
+                         L"invalid main and backup should be prepared");
+        const std::vector<unsigned char> mainBefore =
+            ReadFileBytes(invalidPairPath);
+        const std::vector<unsigned char> backupBefore =
+            ReadFileBytes(invalidPairPath + L".bak");
+        success &= Check(!mainBefore.empty() && !backupBefore.empty(),
+                         L"invalid-pair fixtures should be readable before tests");
+        lightlaunch::ConfigStore invalidPairStore(invalidPairPath);
+        lightlaunch::AppState invalidPairState = expected;
+        const lightlaunch::ConfigLoadOutcome invalidPairOutcome =
+            invalidPairStore.LoadDetailed(invalidPairState);
+        success &= Check(
+            invalidPairOutcome.result ==
+                    lightlaunch::ConfigLoadResult::UnreadableOrInvalid &&
+                invalidPairOutcome.win32Error == ERROR_INVALID_DATA,
+            L"invalid main and backup should block startup");
+        success &= Check(StatesEqual(invalidPairState, expected),
+                         L"a failed load must not mutate the caller state");
+        success &= Check(ReadFileBytes(invalidPairPath) == mainBefore &&
+                             ReadFileBytes(invalidPairPath + L".bak") == backupBefore &&
+                             !FileExists(invalidPairPath + L".tmp"),
+                         L"a failed load must not rewrite configuration files");
+        success &= Check(!invalidPairStore.Save(expected),
+                         L"normal save must reject an unreadable existing main file");
+        success &= Check(ReadFileBytes(invalidPairPath) == mainBefore &&
+                             ReadFileBytes(invalidPairPath + L".bak") == backupBefore &&
+                             !FileExists(invalidPairPath + L".tmp"),
+                         L"rejected normal save must preserve invalid configuration files");
+        DeleteFileW(invalidPairPath.c_str());
+        DeleteFileW((invalidPairPath + L".bak").c_str());
+        DeleteFileW((invalidPairPath + L".tmp").c_str());
+    }
+
+    const std::wstring lockedPath = TemporaryConfigPath();
+    success &= Check(!lockedPath.empty(), L"locked-file test path should be created");
+    if (!lockedPath.empty()) {
+        lightlaunch::ConfigStore lockedStore(lockedPath);
+        success &= Check(lockedStore.Save(expected) && lockedStore.Save(newer),
+                         L"locked-file test state and backup should be prepared");
+        const std::vector<unsigned char> mainBefore = ReadFileBytes(lockedPath);
+        const std::vector<unsigned char> backupBefore =
+            ReadFileBytes(lockedPath + L".bak");
+        success &= Check(!mainBefore.empty() && !backupBefore.empty(),
+                         L"locked-file fixtures should be readable before tests");
+
+        HANDLE transientLock =
+            CreateFileW(lockedPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        success &= Check(transientLock != INVALID_HANDLE_VALUE,
+                         L"transient main-file lock should be acquired");
+        if (transientLock != INVALID_HANDLE_VALUE) {
+            std::thread unlocker([transientLock]() {
+                Sleep(200);
+                CloseHandle(transientLock);
+            });
+            lightlaunch::AppState retriedState;
+            const auto retryStart = std::chrono::steady_clock::now();
+            const lightlaunch::ConfigLoadOutcome retriedOutcome =
+                lockedStore.LoadDetailed(retriedState);
+            const auto retryElapsed = std::chrono::steady_clock::now() - retryStart;
+            unlocker.join();
+            success &= Check(
+                retriedOutcome.result ==
+                    lightlaunch::ConfigLoadResult::LoadedPrimary,
+                L"a short sharing conflict should be retried");
+            success &= Check(retryElapsed >= std::chrono::milliseconds(150),
+                             L"the sharing retry path should actually be exercised");
+            success &= Check(StatesEqual(retriedState, newer),
+                             L"retry should load the current main state");
+        }
+
+        HANDLE mainLock =
+            CreateFileW(lockedPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+                        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        success &= Check(mainLock != INVALID_HANDLE_VALUE,
+                         L"main-file lock should be acquired");
+        if (mainLock != INVALID_HANDLE_VALUE) {
+            lightlaunch::AppState backupState;
+            const lightlaunch::ConfigLoadOutcome backupOutcome =
+                lockedStore.LoadDetailed(backupState);
+            success &= Check(
+                backupOutcome.result ==
+                        lightlaunch::ConfigLoadResult::LoadedBackup &&
+                    backupOutcome.win32Error == ERROR_SHARING_VIOLATION,
+                L"a persistently locked main file should recover from backup");
+            success &= Check(StatesEqual(backupState, expected),
+                             L"locked-main recovery should load the backup state");
+            CloseHandle(mainLock);
+            mainLock = INVALID_HANDLE_VALUE;
+            success &= Check(ReadFileBytes(lockedPath) == mainBefore &&
+                                 ReadFileBytes(lockedPath + L".bak") == backupBefore,
+                             L"backup recovery must not rewrite locked configuration");
+        }
+
+        mainLock = CreateFileW(lockedPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
+        HANDLE backupLock =
+            CreateFileW((lockedPath + L".bak").c_str(),
+                        GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        success &= Check(mainLock != INVALID_HANDLE_VALUE &&
+                             backupLock != INVALID_HANDLE_VALUE,
+                         L"main and backup locks should be acquired");
+        if (mainLock != INVALID_HANDLE_VALUE && backupLock != INVALID_HANDLE_VALUE) {
+            lightlaunch::AppState blockedState = expected;
+            const lightlaunch::ConfigLoadOutcome blockedOutcome =
+                lockedStore.LoadDetailed(blockedState);
+            success &= Check(
+                blockedOutcome.result ==
+                        lightlaunch::ConfigLoadResult::UnreadableOrInvalid &&
+                    blockedOutcome.win32Error == ERROR_SHARING_VIOLATION,
+                L"locked main and backup should block startup safely");
+            success &= Check(StatesEqual(blockedState, expected),
+                             L"a sharing failure must not mutate caller state");
+        }
+        if (mainLock != INVALID_HANDLE_VALUE) {
+            CloseHandle(mainLock);
+        }
+        if (backupLock != INVALID_HANDLE_VALUE) {
+            CloseHandle(backupLock);
+        }
+        success &= Check(ReadFileBytes(lockedPath) == mainBefore &&
+                             ReadFileBytes(lockedPath + L".bak") == backupBefore &&
+                             !FileExists(lockedPath + L".tmp"),
+                         L"sharing failures must leave all config files unchanged");
+
+        mainLock = CreateFileW(lockedPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
+        success &= Check(mainLock != INVALID_HANDLE_VALUE,
+                         L"main-file save lock should be acquired");
+        bool saveWithLockedMain = true;
+        if (mainLock != INVALID_HANDLE_VALUE) {
+            saveWithLockedMain = lockedStore.Save(expected);
+            CloseHandle(mainLock);
+        }
+        success &= Check(!saveWithLockedMain,
+                         L"save must fail while the existing main file is locked");
+        success &= Check(ReadFileBytes(lockedPath) == mainBefore &&
+                             ReadFileBytes(lockedPath + L".bak") == backupBefore &&
+                             !FileExists(lockedPath + L".tmp") &&
+                             !FileExists(lockedPath + L".bak.tmp"),
+                         L"failed main-file save must preserve main and backup bytes");
+
+        backupLock = CreateFileW((lockedPath + L".bak").c_str(),
+                                 GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        success &= Check(backupLock != INVALID_HANDLE_VALUE,
+                         L"backup-file save lock should be acquired");
+        bool saveWithLockedBackup = true;
+        if (backupLock != INVALID_HANDLE_VALUE) {
+            lightlaunch::AppState primaryWithLockedBackup;
+            const lightlaunch::ConfigLoadOutcome primaryOutcome =
+                lockedStore.LoadDetailed(primaryWithLockedBackup);
+            success &= Check(
+                primaryOutcome.result ==
+                        lightlaunch::ConfigLoadResult::LoadedPrimary &&
+                    StatesEqual(primaryWithLockedBackup, newer),
+                L"a valid main file must load without touching a locked backup");
+            saveWithLockedBackup = lockedStore.Save(expected);
+            CloseHandle(backupLock);
+        }
+        success &= Check(!saveWithLockedBackup,
+                         L"save must fail while the backup file is locked");
+        success &= Check(ReadFileBytes(lockedPath) == mainBefore &&
+                             ReadFileBytes(lockedPath + L".bak") == backupBefore &&
+                             !FileExists(lockedPath + L".tmp") &&
+                             !FileExists(lockedPath + L".bak.tmp"),
+                         L"failed backup save must preserve main and backup bytes");
+
+        DeleteFileW(lockedPath.c_str());
+        DeleteFileW((lockedPath + L".bak").c_str());
+        DeleteFileW((lockedPath + L".tmp").c_str());
+        DeleteFileW((lockedPath + L".bak.tmp").c_str());
+    }
+
     DeleteFileW(path.c_str());
+    for (const std::wstring& snapshotPath : recoverySnapshots) {
+        DeleteFileW(snapshotPath.c_str());
+    }
     SetFileAttributesW(backupPath.c_str(), FILE_ATTRIBUTE_NORMAL);
     DeleteFileW(backupPath.c_str());
     DeleteFileW((path + L".tmp").c_str());
